@@ -31,17 +31,12 @@ async function requireAuth(c: any, next: any) {
   await next();
 }
 
-// Public auth routes.
-app.route("/auth", auth);
-
-// Authed /auth routes (e.g. /auth/me).
-app.use("/auth/me", requireAuth);
-
-// All non-auth feature routes require a valid token.
+// Middleware MUST be registered before the routes it guards.
 app.use("/devices/*", requireAuth);
 app.use("/ingest/*", requireAuth);
 app.use("/insights/*", requireAuth);
 
+app.route("/auth", auth); // /auth/me does its own token check inline
 app.route("/devices", devices);
 app.route("/ingest", ingest);
 app.route("/insights", insights);

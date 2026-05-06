@@ -16,7 +16,7 @@ OTP_TTL_MINUTES = "10"
 [[d1_databases]]
 binding = "DB"
 database_name = "whoopsie"
-database_id = "REPLACE_AFTER_npm_run_db:create"
+database_id = "f5a8d211-c6b7-41fc-aeac-3a50984c79c7"
 
 [[r2_buckets]]
 binding = "RAW"

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { ulid } from "ulid";
 import type { Env, User } from "../types";
-import { signToken } from "./jwt";
+import { signToken, verifyToken } from "./jwt";
 import { sendOtpEmail } from "../email/resend";
 import { hashCode, randomDigits } from "../utils/crypto";
 
@@ -108,10 +108,16 @@ auth.post("/verify-otp", async (c) => {
 });
 
 auth.get("/me", async (c) => {
-  const userId = c.get("userId" as never) as string | undefined;
-  if (!userId) return c.json({ error: "unauthorized" }, 401);
+  // Inline auth — this route lives in the public /auth router so app-level
+  // middleware ordering doesn't apply. Worth duplicating 3 lines of token
+  // checking to keep the routing surface simple.
+  const h = c.req.header("authorization") ?? "";
+  const token = h.startsWith("Bearer ") ? h.slice(7) : "";
+  if (!token) return c.json({ error: "no token" }, 401);
+  const claims = await verifyToken(c.env, token);
+  if (!claims) return c.json({ error: "invalid token" }, 401);
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?")
-    .bind(userId)
+    .bind(claims.sub)
     .first<User>();
   if (!user) return c.json({ error: "user not found" }, 404);
   return c.json({ user });
