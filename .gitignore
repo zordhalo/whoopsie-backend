@@ -20,3 +20,9 @@ config.local.*
 # IDE
 .idea/
 .vscode/
+
+# Cloudflare Worker
+node_modules/
+.wrangler/
+.dev.vars
+dist/

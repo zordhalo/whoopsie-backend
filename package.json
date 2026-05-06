@@ -1,0 +1,27 @@
+{
+  "name": "whoopsie-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Whoopsie backend — Cloudflare Worker for ingest, auth, and analytics.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create whoopsie",
+    "db:migrate:local": "wrangler d1 execute whoopsie --local --file=./src/db/schema.sql",
+    "db:migrate:remote": "wrangler d1 execute whoopsie --remote --file=./src/db/schema.sql",
+    "r2:create": "wrangler r2 bucket create whoopsie-raw",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.14",
+    "@tsndr/cloudflare-worker-jwt": "^3.1.4",
+    "ulid": "^2.3.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241218.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.99.0"
+  }
+}

@@ -1,86 +1,116 @@
 # whoopsie-backend
 
-Part of [project-whoopsie](https://github.com/project-whoopsie) — see the [main repository](https://github.com/project-whoopsie/whoopsie) for context on what this project is and why it exists.
+Part of [project-whoopsie](https://github.com/project-whoopsie). See the [main repository](https://github.com/project-whoopsie/whoopsie) for context.
 
-- [whoopsie-protocol](https://github.com/project-whoopsie/whoopsie-protocol) ← Start here if you're new. The BLE protocol documentation.
-- [whoopsie](https://github.com/project-whoopsie/whoopsie) ← The Flutter companion app that sends data here.
+- [whoopsie-protocol](https://github.com/project-whoopsie/whoopsie-protocol) — BLE protocol documentation + Dart package.
+- [whoopsie](https://github.com/project-whoopsie/whoopsie) — Flutter companion app.
 
 ---
 
 ## What this is
 
-A minimal server that receives WHOOP metrics from the companion app, stores them locally, and surfaces basic computed insights. HR, HRV, SpO2, temperature, battery, and IMU data — stored in SQLite, queryable over HTTP, streamable over WebSocket.
+A Cloudflare Worker that receives WHOOP metrics from the companion app, stores them in D1 + R2, and surfaces computed insights over HTTP.
 
----
+- **Auth:** email + 6-digit OTP (no passwords). Tokens are JWTs.
+- **Ingest:** signed `POST /ingest/batch` accepts JSON (gzipped optional). Raw payload archived to R2; queryable rows projected into D1.
+- **Insights:** `GET /insights/today | /sleep/:date | /recovery/:date | /trend | /hr` — JSON only, no streaming.
+- **Nightly worker:** Cron-triggered at 06:00 UTC, computes simple sleep stages + recovery score per user from the last 24 h of data.
 
-## What this isn't
-
-WHOOP's actual platform. Their recovery model is built on years of research, sleep staging, and validated algorithms. This backend applies a weighted average to two metrics and calls it recovery. It is a skeleton — something to build on, not something to trust with health decisions.
-
----
-
-## Status
-
-This is not a product. This is not beta software. This is not even alpha.
-
-This is one piece of a research project, built primarily to validate that the data coming off the device was real and meaningful. The insight calculations are approximations. The architecture is intentionally minimal. Many things are hardcoded. There is no authentication.
-
-With enough community support and collaboration, something worthy could eventually be built here. But that is a long road and this is barely the first step.
-
----
-
-## Architecture
-
-Two files.
-
-`database.py` sets up the tables and hands out connections. `main.py` is everything else — ingest routes, insight calculations, WebSocket hub. It was written to be easy to read and easy to replace. If you want to swap SQLite for Postgres or rewrite the recovery logic with something real, the surface area is small.
-
----
-
-## Running it
-
-```bash
-python -m venv venv
-source venv/bin/activate
-pip install fastapi aiosqlite uvicorn
-
-uvicorn main:app --host 0.0.0.0 --port 5677
-```
-
-The companion app expects it at `http://<your-local-ip>:5677`. Update `lib/core/services/api_client.dart` accordingly — it defaults to `localhost` which won't work on a real device.
+The "recovery" algorithm is intentionally simple. v1 ships a weighted blend of sleep efficiency, rMSSD, and resting HR. Replace `src/scheduled/nightly.ts` when you bring a real model.
 
 ---
 
 ## API
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check |
-| `POST` | `/api/ingest` | Ingest bulk metrics |
-| `GET` | `/api/metrics/hr?hours=N` | HR history |
-| `GET` | `/api/metrics/hrv?hours=N` | HRV history |
-| `GET` | `/api/metrics/spo2?hours=N` | SpO2 history |
-| `GET` | `/api/insights/today` | Today's recovery, strain, HRV trend |
-| `GET` | `/api/insights/recovery` | Current recovery score |
-| `GET` | `/api/insights/history?days=N` | Historical insights |
-| `WS` | `/ws/stream` | Live metric stream |
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/` | — | service info |
+| `GET` | `/health` | — | health check |
+| `POST` | `/auth/request-otp` | — | `{ email }` → emails 6-digit code |
+| `POST` | `/auth/verify-otp` | — | `{ email, code, display_name? }` → `{ token, user }` |
+| `GET` | `/auth/me` | bearer | current user |
+| `POST` | `/devices/pair` | bearer | `{ strap_serial, ble_id, name? }` → `{ device }` |
+| `GET` | `/devices` | bearer | list paired devices |
+| `DELETE` | `/devices/:id` | bearer | unpair |
+| `POST` | `/ingest/batch` | bearer | `{ events?, hr?, ppg?, r24?, r25?, device_id? }` |
+| `GET` | `/insights/today` | bearer | live snapshot |
+| `GET` | `/insights/sleep/:date` | bearer | sleep summary + stages |
+| `GET` | `/insights/recovery/:date` | bearer | recovery summary |
+| `GET` | `/insights/trend?metric=&days=` | bearer | time series |
+| `GET` | `/insights/hr?from=&to=` | bearer | 1Hz HR series |
 
 ---
 
-## Legal & Ethics
+## Local setup
 
-This research was conducted on a device personally owned by the author. No WHOOP systems, servers, or accounts were accessed, modified, or interfered with. Shared for educational and research purposes only.
+```bash
+npm install
+cp .dev.vars.example .dev.vars   # then edit secrets
+npm run db:migrate:local
+npm run dev
+```
 
-**If WHOOP, Inc. believes any part of this violates their intellectual property rights:** abdulsaheel81@gmail.com
+`.dev.vars`:
 
----
+```
+JWT_SECRET=any-long-random-string
+RESEND_API_KEY=re_xxxxxxxxxxxxxxx
+```
 
-## Contributing
+## Deploying to Cloudflare
 
-Open an issue or send a PR. The protocol is solved. The data pipeline works. Better insight algorithms, proper sleep staging, anything that makes this more useful — all welcome.
+```bash
+# 1. Create the D1 database (one time).
+npm run db:create
+# copy the printed database_id into wrangler.toml [[d1_databases]]
 
----
+# 2. Create the R2 bucket.
+npm run r2:create
 
-## Disclaimer
+# 3. Push schema to remote D1.
+npm run db:migrate:remote
 
-Provided as-is, with no warranty. Use it on your own device at your own risk. Do not make health decisions based on the numbers this server produces.
+# 4. Set production secrets.
+npx wrangler secret put JWT_SECRET
+npx wrangler secret put RESEND_API_KEY
+
+# 5. Deploy.
+npm run deploy
+```
+
+Tail logs with `npm run tail`.
+
+## Email
+
+Default sender is `onboarding@resend.dev` via [Resend](https://resend.com) (free tier: 3000 emails/month). Once you add a verified domain to Resend, change `EMAIL_FROM` in `wrangler.toml`.
+
+To swap to MailChannels (free for Cloudflare Workers, requires DKIM/SPF on a domain in Cloudflare): replace `src/email/resend.ts` — keep the `sendOtpEmail(env, email, code)` signature and rewrite the body.
+
+## Architecture
+
+```
+Phone ─POST /ingest/batch (gzip JSON)─▶ Worker
+                                         │
+                                         ├─▶ R2: raw/<userId>/<date>/<batchId>.json
+                                         └─▶ D1: hr_samples, ppg_samples, events,
+                                                 recovery_summaries, rr_samples
+
+Cron (06:00 UTC) ─▶ Worker.scheduled ─▶ nightly() ─▶ sleep_summaries, sleep_stages,
+                                                     recovery_summaries
+
+Phone ─GET /insights/* (bearer JWT)─▶ Worker ─▶ D1 reads
+```
+
+## Status
+
+Pre-alpha. Schema is stable enough for iteration; auth surface is the same shape it'll keep; insights endpoints return real data when the cron has run. Don't make health decisions from this.
+
+## Legal
+
+The author owns and operates the WHOOP device data flowing through this backend. No WHOOP systems, servers, or accounts are accessed. Shared for research and educational purposes.
+
+If WHOOP, Inc. has concerns: abdulsaheel81@gmail.com
+
+## License
+
+AGPL-3.0 — forks and hosted services must also be open-source.

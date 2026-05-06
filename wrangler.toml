@@ -1,0 +1,30 @@
+name = "whoopsie-backend"
+main = "src/index.ts"
+compatibility_date = "2024-12-30"
+compatibility_flags = ["nodejs_compat"]
+
+# Set secrets via:  wrangler secret put JWT_SECRET / RESEND_API_KEY
+# Local dev:  echo 'JWT_SECRET=dev-secret-change-me' > .dev.vars
+#             echo 'RESEND_API_KEY=re_...' >> .dev.vars
+
+[vars]
+EMAIL_FROM = "Whoopsie <onboarding@resend.dev>"  # swap for your verified sender once you add a domain
+JWT_ISSUER = "whoopsie"
+JWT_TTL_DAYS = "30"
+OTP_TTL_MINUTES = "10"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "whoopsie"
+database_id = "REPLACE_AFTER_npm_run_db:create"
+
+[[r2_buckets]]
+binding = "RAW"
+bucket_name = "whoopsie-raw"
+
+[triggers]
+# Nightly analytics at 06:00 UTC. Adjust per timezone of your user base later.
+crons = ["0 6 * * *"]
+
+[observability]
+enabled = true
