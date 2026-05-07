@@ -10,7 +10,7 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 EMAIL_FROM = "Whoopsie <onboarding@resend.dev>"  # swap for your verified sender once you add a domain
 JWT_ISSUER = "whoopsie"
-JWT_TTL_DAYS = "30"
+JWT_TTL_DAYS = "365"
 OTP_TTL_MINUTES = "10"
 
 [[d1_databases]]

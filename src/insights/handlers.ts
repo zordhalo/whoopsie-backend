@@ -1,43 +1,22 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
+import type { UserScope, UserStorage } from "../utils/scope";
 
-export const insights = new Hono<{ Bindings: Env; Variables: { userId: string } }>();
-
-function dayBoundsUtc(date: string): [number, number] {
-  const start = Math.floor(new Date(`${date}T00:00:00Z`).getTime() / 1000);
-  return [start, start + 86400];
-}
+type Vars = { Variables: { scope: UserScope; storage: UserStorage }; Bindings: Env };
+export const insights = new Hono<Vars>();
 
 // GET /insights/today  → live snapshot
 insights.get("/today", async (c) => {
-  const userId = c.get("userId");
+  const scope = c.get("scope");
   const now = Math.floor(Date.now() / 1000);
   const dayStart = Math.floor(now / 86400) * 86400;
   const today = new Date(dayStart * 1000).toISOString().slice(0, 10);
 
   const [hr, recovery, sleep, batt] = await Promise.all([
-    c.env.DB.prepare(
-      `SELECT AVG(bpm) AS avg, MIN(bpm) AS min, MAX(bpm) AS max, COUNT(*) AS n
-       FROM hr_samples WHERE user_id = ? AND ts >= ? AND bpm > 0`
-    )
-      .bind(userId, dayStart)
-      .first<{ avg: number | null; min: number | null; max: number | null; n: number }>(),
-    c.env.DB.prepare(
-      "SELECT * FROM recovery_summaries WHERE user_id = ? AND date = ?"
-    )
-      .bind(userId, today)
-      .first(),
-    c.env.DB.prepare(
-      "SELECT * FROM sleep_summaries WHERE user_id = ? AND date = ?"
-    )
-      .bind(userId, today)
-      .first(),
-    c.env.DB.prepare(
-      `SELECT detail FROM events WHERE user_id = ? AND event_id = 3
-       ORDER BY ts DESC LIMIT 1`
-    )
-      .bind(userId)
-      .first<{ detail: string | null }>(),
+    scope.todaySnapshot(dayStart),
+    scope.recoveryByDate(today),
+    scope.sleepByDate(today),
+    scope.recentBatteryEvent(),
   ]);
 
   return c.json({
@@ -51,75 +30,41 @@ insights.get("/today", async (c) => {
 
 // GET /insights/sleep/:date  (date = YYYY-MM-DD)
 insights.get("/sleep/:date", async (c) => {
-  const userId = c.get("userId");
+  const scope = c.get("scope");
   const date = c.req.param("date");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: "bad date" }, 400);
-  const [start, end] = dayBoundsUtc(date);
-
   const [summary, stages] = await Promise.all([
-    c.env.DB.prepare("SELECT * FROM sleep_summaries WHERE user_id = ? AND date = ?")
-      .bind(userId, date)
-      .first(),
-    c.env.DB.prepare(
-      `SELECT ts, stage FROM sleep_stages
-       WHERE user_id = ? AND ts >= ? AND ts < ? ORDER BY ts ASC`
-    )
-      .bind(userId, start, end)
-      .all<{ ts: number; stage: number }>(),
+    scope.sleepByDate(date),
+    scope.sleepStagesByDate(date),
   ]);
-
   return c.json({ date, summary, stages: stages.results ?? [] });
 });
 
-// GET /insights/recovery/:date
 insights.get("/recovery/:date", async (c) => {
-  const userId = c.get("userId");
+  const scope = c.get("scope");
   const date = c.req.param("date");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: "bad date" }, 400);
-  const summary = await c.env.DB.prepare(
-    "SELECT * FROM recovery_summaries WHERE user_id = ? AND date = ?"
-  )
-    .bind(userId, date)
-    .first();
-  return c.json({ date, summary });
+  return c.json({ date, summary: await scope.recoveryByDate(date) });
 });
 
-// GET /insights/trend?metric=recovery|hrv|sleep_total&days=30
+// GET /insights/trend?metric=recovery|hrv|sleep_total|hr&days=30
 insights.get("/trend", async (c) => {
-  const userId = c.get("userId");
+  const scope = c.get("scope");
   const metric = c.req.query("metric") ?? "recovery";
   const days = Math.min(parseInt(c.req.query("days") ?? "30", 10), 365);
-  const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
-  const cutoffDate = new Date(cutoff * 1000).toISOString().slice(0, 10);
+  const cutoffDate = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
 
   let rows: unknown;
   switch (metric) {
     case "recovery":
-      rows = (
-        await c.env.DB.prepare(
-          "SELECT date, score FROM recovery_summaries WHERE user_id = ? AND date >= ? ORDER BY date ASC"
-        )
-          .bind(userId, cutoffDate)
-          .all()
-      ).results;
-      break;
     case "hrv":
-      rows = (
-        await c.env.DB.prepare(
-          "SELECT date, hrv FROM recovery_summaries WHERE user_id = ? AND date >= ? ORDER BY date ASC"
-        )
-          .bind(userId, cutoffDate)
-          .all()
-      ).results;
+      rows = (await scope.recoveryTrend(cutoffDate)).results;
       break;
     case "sleep_total":
-      rows = (
-        await c.env.DB.prepare(
-          "SELECT date, total_sec FROM sleep_summaries WHERE user_id = ? AND date >= ? ORDER BY date ASC"
-        )
-          .bind(userId, cutoffDate)
-          .all()
-      ).results;
+      rows = (await scope.sleepTrend(cutoffDate)).results;
+      break;
+    case "hr":
+      rows = (await scope.hrTrend(days)).results;
       break;
     default:
       return c.json({ error: "unknown metric" }, 400);
@@ -127,18 +72,14 @@ insights.get("/trend", async (c) => {
   return c.json({ metric, days, points: rows });
 });
 
-// GET /insights/hr?from=ts&to=ts  → 1Hz HR series for live/history view
+// GET /insights/hr?from=ts&to=ts  → 1Hz HR series
 insights.get("/hr", async (c) => {
-  const userId = c.get("userId");
+  const scope = c.get("scope");
   const from = parseInt(c.req.query("from") ?? "0", 10);
   const to = parseInt(c.req.query("to") ?? "0", 10) || Math.floor(Date.now() / 1000);
   if (from <= 0) return c.json({ error: "from required" }, 400);
-  // Cap span at 24 h to avoid blowing up payload.
+  // Cap span to avoid blowing up payload size.
   const start = Math.max(from, to - 86400);
-  const { results } = await c.env.DB.prepare(
-    "SELECT ts, bpm, gsr FROM hr_samples WHERE user_id = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC"
-  )
-    .bind(userId, start, to)
-    .all();
+  const { results } = await scope.hrInRange(start, to);
   return c.json({ from: start, to, points: results });
 });
